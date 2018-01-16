@@ -1,0 +1,193 @@
+ * Starting Project 4: the final destination
+set more off
+capture drop _all
+capture log close
+log using bls.txt ,replace text
+
+
+
+freduse PAYEMS  MCOILWTICO XTEXVA01USM667S TB3MS CPIAUCSL CIVPART UNRATE IQ   A229RC0 PCE  W825RC1  W824RC1 MTSDS133FMS PCEPILFE  
+**Import data for US employment potentially relevant independent variables from FRED
+
+** generate a time variable
+gen time = m(1934m1) +_n-1
+
+
+/* merge monthly data on the NASDAQ Composite Index and Initial claims for unemployment insurance
+- accessed from FRED in daily and weekly data
+- used the following program to compute into monthly data:
+
+gen dm = mofd(daten)
+format dm %tm
+collapse claims , by(dm)
+rename dm time
+
+
+- collapses data for each week or day of the month into the monthly average
+*/
+merge 1:m time using  "/Users/AidanWorswick/Documents/Queen's/4th year/ECON452/Project 4 NASDAQ data.dta"
+drop _merge
+
+merge 1:m time using "/Users/AidanWorswick/Documents/Queen's/4th year/ECON452/Project 4 U claim data.dta"
+drop _merge
+
+* set time as a time variable
+tsset time
+
+* format as monthly data 
+format time %tm
+
+* drop all data prior to January 1990
+drop if time<m(1990m1)
+drop daten date
+
+* rename imported variables from FRED
+rename MCOILWTICO oil
+rename XTEXVA01USM667S exports
+rename TB3MS i
+rename CPIAUCSL cpi
+rename CIVPART participation
+rename UNRATE u
+rename A229RC0 income
+rename MTSDS133FMS budget
+
+
+
+** generate variable emp as the change in employment for each month
+gen emp=d.PAYEMS
+ac emp
+graph rename ac_emp
+
+* look at the trend in PAYEMS
+gen trend = _n
+** regress payems against the trend variable
+regress PAYEMS trend
+* generate a variable for the estimates of how employment has changed with time from the regression
+predict res,res
+ac res
+predict fit
+
+* graph employment and the residuals from the regression
+twoway (tsline PAYEMS) (tsline fit, yaxis(2)), ytitle("thousands of Persons")title("Employment Change: 1990m1 to 2017m10")
+
+
+label variable PAYEMS "PAYEMS" 
+label variable emp "Monthly Employment Change"
+
+
+* graph employment and the monthly change in employment
+
+twoway (tsline PAYEMS ) (tsline emp, yaxis(2)), xtitle("Time (Year-Month)") ytitle("Monthly US Employment Change in Thousands") title("US Employment Change Over Time")
+
+
+** run a loop to create a variable for the growth rate of all variables
+foreach var of varlist PCE income    u participation cpi i exports oil  PAYEMS  claims   nasdaq   budget   {
+gen g_`var'=((`var'-L.`var')/L.`var')* 400
+}
+
+** run a loop to graph the auto correllation function of each growth variable
+foreach var of varlist PCE income    u participation cpi i exports oil  PAYEMS claims    nasdaq  budget   {
+ac g_`var'
+graph rename `var'
+}
+
+** run a loop to generate AR regression's with up to 4 lags to determine how many lags of emp we should include in our model
+foreach num of numlist 1/4 {
+gen lag_`num'=L`num'.emp
+regress emp lag*
+estimates store reg_`num',title(AR `num')
+predict res_`num',res
+}
+** output the regression data into an excel file
+global path1="reg.xls"
+ xml_tab  reg_1 reg_2 reg_3 reg_4 , save($path1) replace tstat b  stats(N r2 rmse bic ) title(Some AR Models)
+
+** exclude the 4th lag because it is not significant at 10% level, try again for 3 lags
+
+* run OLS regression with 3 lags of emp
+reg emp L.emp L2.emp L3.emp g_claims L.( g_PCE g_income  g_u g_participation g_cpi g_i g_exports g_oil    g_nasdaq   g_budget  )
+
+
+* test if coefficient on all variables in the test is zero
+test L.emp = L2.emp = L3.emp = g_claims = L.g_PCE = L.g_income = L.g_u = L.g_participation = L.g_cpi = L.g_i = L.g_exports = L.g_oil = L.g_nasdaq = L.g_budget = 0
+* test is strongly rejected, take out variables that are individually significant at 10% level
+
+* test if the coefficients on all the rest of the variables are equal to zero
+test  L.g_PCE = L.g_income = L.g_cpi = L.g_i = L.g_exports = L.g_budget = 0
+* null is retained
+
+** re run regression using only significant variables
+reg emp L.emp L2.emp L3.emp  g_claims L.(g_u g_participation g_oil g_nasdaq)
+
+** generate a variable for our regression estimates of emp
+predict OLS
+* generate a variable for the residuals and check to see if there is serial correlation in the residuals
+predict res, res
+ac res, title ("Autocorrelation Function of Residuals")
+
+*output regression data into an excel file so it can be added into our presentation
+estimates store reg_model 
+global path1="Regression.xls"
+xml_tab  reg_model , save($path1) replace tstat b  stats(N r2 rmse bic ) title(Regression Model)
+ 
+ 
+ 
+/* since we already have data on initial unemployment benefit claims and NASDAQ index for November our regressions output a value for november,
+otherwise we would have to use the tsappend, add(1) command to add an observation for november prior to estimating */
+
+ 
+* compare our OLS regression with an ARMAX model using 3 lages of emp and the same exogenous dependent variables
+arima emp  g_claims L.(g_u g_participation g_oil g_nasdaq), ar(1/3)
+
+* generate a variable for our new estimates
+predict ARMAX, dynamic(tm(2017m11))
+
+* generate a variable for the residuals and check to see if there is serial correlation in the residuals
+predict res2, res
+ac res2
+ 
+* compare with an AR(3) model
+arima emp, ar(1/3)
+
+* generate a variable for our new estimates
+predict AR3, dynamic(tm(2017m11))
+
+* generate a variable for the residuals and check to see if there is serial correlation in the residuals
+predict res3, res
+ac res3
+ 
+** calculate error of each model and compare the two
+gen ARMAX_er = emp - ARMAX
+gen OLS_er = emp - OLS
+gen AR3_er = emp - AR3
+sum ARMAX_er OLS_er AR3_er, detail 
+* OLS model error has lower mean and variance
+twoway (tsline AR3_er) (tsline ARMAX_er) (tsline OLS_er)   , title("Regression Model Error") ytitle("Error in Thousands of People")
+
+** generate the sample mean to compare to our forcast
+sum emp
+gen mean = r(mean)
+
+** label estimated variables
+label variable mean "Mean Employment Change"
+label variable OLS "OLS Model"
+label variable ARMAX "ARMAX Model"
+label variable AR3 "AR(3) Model"
+
+
+* graph the errors of our estimates in 2017 
+twoway (tsline AR3_er) (tsline ARMAX_er) (tsline OLS_er)  if time>m(2017m1) , title("Regression Model Error") ytitle("Error in Thousands of People")
+
+* graph our estimates of employment change in 2017
+twoway (tsline AR3) (tsline emp) (tsline ARMAX) (tsline OLS) (tsline mean)  if time>m(2017m1) , title("Forecasting Models") ytitle("Monthly Change in Employment in Thousands") legend (row(3))
+
+* generate summary statistics to compare the errors of the models in 2017
+sum ARMAX_er OLS_er AR3_er if time > m(2017m1) , detail 
+
+label variable fit "Estimated Employment Change"
+
+
+* graph our model for change in employment and actual change
+twoway  (tsline fit) (tsline emp), title( "Estimated vs Real Employment Change") xtitle("Time (Year-Month)") ytitle("Monthly US Employment Change in Thousands") legend(row(2))
+
+
